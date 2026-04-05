@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VitalSense Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="bg-gray-50 text-gray-800" x-data="appData()">
+
+    <div class="container mx-auto p-6">
+        <h1 class="text-4xl font-extrabold mb-6 text-blue-900">Vitals History</h1>
+
+        <!-- Graph Container -->
+        <div class="bg-white p-6 rounded-xl shadow-lg mb-8 border border-gray-200" x-show="showGraph" x-transition>
+            <div class="flex justify-between mb-4">
+                <h2 class="text-lg font-bold">Session Detail</h2>
+                <button @click="showGraph = false" class="text-gray-500 hover:text-red-500">Close</button>
+            </div>
+            <div class="relative h-80 w-full">
+                <canvas id="vitalChart"></canvas>
+            </div>
+            <div class="mt-4 text-sm text-gray-600 text-center">
+                <span class="inline-block w-3 h-3 bg-red-200 mr-1"></span> Stress Zone (&lt; 25ms HRV)
+                <span class="inline-block w-3 h-3 bg-green-200 ml-4 mr-1"></span> Relaxed Zone (&gt; 25ms HRV)
+            </div>
+        </div>
+
+        <!-- Table -->
+        <div class="bg-white rounded-xl shadow overflow-hidden">
+            <table class="min-w-full leading-normal">
+                <thead>
+                    <tr class="bg-blue-50 text-blue-800">
+                        <th class="px-5 py-3 text-left text-xs font-semibold uppercase">Date</th>
+                        <th class="px-5 py-3 text-left text-xs font-semibold uppercase">Avg BPM</th>
+                        <th class="px-5 py-3 text-left text-xs font-semibold uppercase">Avg SpO2</th>
+                        <th class="px-5 py-3 text-left text-xs font-semibold uppercase">Status</th>
+                        <th class="px-5 py-3"></th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-200">
+                    {% for session in sessions %}
+                    <tr>
+                        <td class="px-6 py-4 whitespace-nowrap">{{ session.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                        <td class="px-6 py-4">{{ session.avg_bpm }}</td>
+                        <td class="px-6 py-4">{{ session.avg_spo2 }}%</td>
+                        
+                        <!-- UPDATED STRESS COLUMN -->
+                        <td class="px-6 py-4">
+                            <!-- Logic: < 25 is High, 25-40 is Med, > 40 is OK -->
+                            {% if session.avg_stress < 25 %}
+                                <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-red-100 text-red-800">
+                                    High Stress ({{ "%.1f"|format(session.avg_stress) }})
+                                </span>
+                            {% elif session.avg_stress < 40 %}
+                                <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-yellow-100 text-yellow-800">
+                                    Medium ({{ "%.1f"|format(session.avg_stress) }})
+                                </span>
+                            {% else %}
+                                <span class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-100 text-green-800">
+                                    OK / Relaxed ({{ "%.1f"|format(session.avg_stress) }})
+                                </span>
+                            {% endif %}
+                        </td>
+                        
+                        <td class="px-6 py-4">
+                            <button @click="loadSession({{ session.id }})" 
+                                class="bg-blue-500 hover:bg-blue-700 text-white font-bold py-1 px-3 rounded text-xs">
+                                View Graph
+                            </button>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('alpine:init', () => {
+            Alpine.data('appData', () => ({
+                showGraph: false,
+                chart: null,
+
+                async loadSession(id) {
+                    this.showGraph = true;
+                    const res = await fetch(`/api/session/${id}`);
+                    const data = await res.json();
+                    this.renderChart(data);
+                },
+
+                renderChart(data) {
+                    const ctx = document.getElementById('vitalChart').getContext('2d');
+                    if(this.chart) this.chart.destroy();
+
+                    // 1. DATA CLEANING
+                    // Convert '0' values to 'null'. Chart.js ignores nulls.
+                    const bpmClean = data.bpm.map(v => v > 0 ? v : null);
+                    const stressClean = data.stress.map(v => v > 0 ? v : null);
+
+                    this.chart = new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: data.labels.map(s => s + 's'),
+                            datasets: [
+                                {
+                                    label: 'Heart Rate (BPM)',
+                                    data: bpmClean, // Use the cleaned data
+                                    borderColor: 'rgb(239, 68, 68)',
+                                    tension: 0.4,
+                                    spanGaps: true, // <--- THIS TURNS ON THE "BRIDGING"
+                                    yAxisID: 'y'
+                                },
+                                {
+                                    label: 'Stress Index (HRV)',
+                                    data: stressClean, // Use the cleaned data
+                                    borderColor: 'rgb(59, 130, 246)',
+                                    tension: 0.4,
+                                    spanGaps: true, // <--- THIS TURNS ON THE "BRIDGING"
+                                    yAxisID: 'y1'
+                                }
+                            ]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            interaction: { mode: 'index', intersect: false },
+                            plugins: {
+                                annotation: {
+                                    annotations: {
+                                        line1: {
+                                            type: 'line',
+                                            yMin: 25,
+                                            yMax: 25,
+                                            borderColor: 'rgb(100, 100, 100)',
+                                            borderWidth: 2,
+                                            borderDash: [5, 5],
+                                            label: { content: 'Stress Threshold', enabled: true }
+                                        }
+                                    }
+                                }
+                            },
+                            scales: {
+                                y: { position: 'left', title: {display: true, text: 'BPM'} },
+                                y1: { position: 'right', grid: {drawOnChartArea: false}, title: {display: true, text: 'HRV (ms)'} }
+                            }
+                        }
+                    });
+                }
+            }))
+        });
+    </script>
+</body>
+</html>
