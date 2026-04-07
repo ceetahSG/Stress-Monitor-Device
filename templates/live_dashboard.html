@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Stress Monitor</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            padding: 40px;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .status-bar {
+            background: #f0f0f0;
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            color: #666;
+            font-size: 14px;
+        }
+
+        .metrics {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .metric {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 25px;
+            border-radius: 15px;
+            text-align: center;
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .metric-value {
+            font-size: 48px;
+            font-weight: bold;
+            margin: 15px 0;
+        }
+
+        .metric-label {
+            font-size: 13px;
+            opacity: 0.9;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .chart-container {
+            position: relative;
+            height: 400px;
+            margin-bottom: 30px;
+            background: #f9f9f9;
+            border-radius: 15px;
+            padding: 20px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+        }
+
+        .stress-indicator {
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            padding: 25px;
+            border-radius: 15px;
+            text-align: center;
+            margin-bottom: 20px;
+        }
+
+        .stress-level {
+            font-size: 32px;
+            font-weight: bold;
+            margin: 15px 0;
+            padding: 15px;
+            border-radius: 10px;
+        }
+
+        .stress-high {
+            background: #ffebee;
+            color: #c62828;
+        }
+
+        .stress-medium {
+            background: #fff3e0;
+            color: #e65100;
+        }
+
+        .stress-low {
+            background: #e8f5e9;
+            color: #2e7d32;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+        }
+
+        button {
+            padding: 12px 30px;
+            border: none;
+            border-radius: 10px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-weight: bold;
+        }
+
+        .btn-stop {
+            background: #e74c3c;
+            color: white;
+        }
+
+        .btn-stop:hover {
+            background: #c0392b;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(231, 76, 60, 0.4);
+        }
+
+        .connection-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+            animation: pulse 2s infinite;
+        }
+
+        .connection-indicator.connected {
+            background: #27ae60;
+        }
+
+        .connection-indicator.disconnected {
+            background: #e74c3c;
+            animation: none;
+        }
+
+        @keyframes pulse {
+
+            0%,
+            100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.5;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>
+            <span>📊</span>
+            Real-Time Stress Monitor
+            <span class="connection-indicator disconnected" id="connectionIndicator"></span>
+            <span id="connectionStatus">Connecting...</span>
+        </h1>
+
+        <div class="status-bar">
+            <span id="statusText">Waiting for data...</span>
+        </div>
+
+        <div class="metrics">
+            <div class="metric">
+                <div class="metric-label">Heart Rate</div>
+                <div class="metric-value" id="bpm">--</div>
+                <div class="metric-label">BPM</div>
+            </div>
+            <div class="metric">
+                <div class="metric-label">Blood Oxygen</div>
+                <div class="metric-value" id="spo2">--</div>
+                <div class="metric-label">%</div>
+            </div>
+            <div class="metric">
+                <div class="metric-label">Heart Rate Variability</div>
+                <div class="metric-value" id="stress">--</div>
+                <div class="metric-label">ms</div>
+            </div>
+            <div class="metric">
+                <div class="metric-label">Duration</div>
+                <div class="metric-value" id="duration">0s</div>
+                <div class="metric-label">Time Elapsed</div>
+            </div>
+        </div>
+
+        <div class="stress-indicator">
+            <div class="metric-label">Stress Status</div>
+            <div class="stress-level" id="stressStatus">Waiting...</div>
+        </div>
+
+        <div class="chart-container">
+            <canvas id="liveChart"></canvas>
+        </div>
+
+        <div class="button-group">
+            <button class="btn-stop" onclick="stopSession()">Stop Session</button>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+        let chart = null;
+        let chartData = {
+            labels: [],
+            bpm: [],
+            spo2: [],
+            stress: []
+        };
+        let sessionId = null;
+        let startTime = null;
+        let dataPoints = 0;
+
+        const ctx = document.getElementById('liveChart').getContext('2d');
+
+        function initChart() {
+            if (chart) chart.destroy();
+
+            chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: chartData.labels,
+                    datasets: [
+                        {
+                            label: 'BPM',
+                            data: chartData.bpm,
+                            borderColor: '#e74c3c',
+                            backgroundColor: 'rgba(231, 76, 60, 0.1)',
+                            borderWidth: 2,
+                            tension: 0.4,
+                            fill: true,
+                            yAxisID: 'y'
+                        },
+                        {
+                            label: 'SpO2 (%)',
+                            data: chartData.spo2,
+                            borderColor: '#3498db',
+                            backgroundColor: 'rgba(52, 152, 219, 0.1)',
+                            borderWidth: 2,
+                            tension: 0.4,
+                            fill: true,
+                            yAxisID: 'y1'
+                        },
+                        {
+                            label: 'Stress (HRV)',
+                            data: chartData.stress,
+                            borderColor: '#f39c12',
+                            backgroundColor: 'rgba(243, 156, 18, 0.1)',
+                            borderWidth: 2,
+                            tension: 0.4,
+                            fill: true,
+                            yAxisID: 'y2'
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false,
+                    },
+                    plugins: {
+                        legend: {
+                            position: 'top',
+                        }
+                    },
+                    scales: {
+                        y: {
+                            type: 'linear',
+                            display: true,
+                            position: 'left',
+                            title: { display: true, text: 'BPM' },
+                            min: 0,
+                            max: 150
+                        },
+                        y1: {
+                            type: 'linear',
+                            display: true,
+                            position: 'center',
+                            title: { display: true, text: 'SpO2 (%)' },
+                            min: 80,
+                            max: 100
+                        },
+                        y2: {
+                            type: 'linear',
+                            display: true,
+                            position: 'right',
+                            title: { display: true, text: 'Stress (ms)' },
+                            min: 0,
+                            max: 100
+                        }
+                    }
+                }
+            });
+        }
+
+        function updateDisplay(bpm, spo2, stress) {
+            document.getElementById('bpm').textContent = bpm || '--';
+            document.getElementById('spo2').textContent = spo2 || '--';
+            document.getElementById('stress').textContent = stress ? stress.toFixed(1) : '--';
+
+            let stressText = 'Waiting...';
+            let stressClass = '';
+            if (stress > 0) {
+                if (stress < 25) {
+                    stressText = '🔴 HIGH STRESS';
+                    stressClass = 'stress-high';
+                } else if (stress < 40) {
+                    stressText = '🟡 MEDIUM STRESS';
+                    stressClass = 'stress-medium';
+                } else {
+                    stressText = '🟢 RELAXED';
+                    stressClass = 'stress-low';
+                }
+            }
+
+            const statusEl = document.getElementById('stressStatus');
+            statusEl.textContent = stressText;
+            statusEl.className = `stress-level ${stressClass}`;
+        }
+
+        function updateChart() {
+            if (!chart) initChart();
+            chart.data.labels = chartData.labels;
+            chart.data.datasets[0].data = chartData.bpm;
+            chart.data.datasets[1].data = chartData.spo2;
+            chart.data.datasets[2].data = chartData.stress;
+            chart.update('none');
+        }
+
+        function updateDuration() {
+            if (startTime) {
+                const elapsed = Math.floor((Date.now() - startTime) / 1000);
+                document.getElementById('duration').textContent = elapsed + 's';
+            }
+        }
+
+        function stopSession() {
+            if (sessionId) {
+                fetch(`/api/end-session`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: sessionId })
+                }).then(r => r.json()).then(data => {
+                    alert('Session saved!');
+                    location.href = '/';
+                });
+            }
+        }
+
+        // Socket.IO Events
+        socket.on('connect', () => {
+            console.log('✅ Connected to server');
+            document.getElementById('connectionIndicator').classList.remove('disconnected');
+            document.getElementById('connectionIndicator').classList.add('connected');
+            document.getElementById('connectionStatus').textContent = 'Connected';
+            document.getElementById('statusText').textContent = 'Connected - Waiting for sensor data...';
+        });
+
+        socket.on('new_data', (data) => {
+            console.log('📊 New data:', data);
+
+            const bpm = data.bpm || 0;
+            const spo2 = data.spo2 || 0;
+            const stress = data.stress || 0;
+            sessionId = data.session_id;
+
+            if (!startTime) {
+                startTime = Date.now();
+            }
+
+            chartData.labels.push(dataPoints);
+            chartData.bpm.push(bpm);
+            chartData.spo2.push(spo2);
+            chartData.stress.push(stress);
+            dataPoints++;
+
+            if (chartData.labels.length > 120) {
+                chartData.labels.shift();
+                chartData.bpm.shift();
+                chartData.spo2.shift();
+                chartData.stress.shift();
+            }
+
+            updateDisplay(bpm, spo2, stress);
+            updateChart();
+            document.getElementById('statusText').textContent = `Recording... Session: ${sessionId} | ${dataPoints} measurements`;
+        });
+
+        socket.on('session_ended', (data) => {
+            console.log('🛑 Session ended:', data);
+            alert(`Session ended!\nAvg BPM: ${data.avg_bpm}\nAvg SpO2: ${data.avg_spo2}\nAvg HRV: ${data.avg_stress.toFixed(2)}`);
+            setTimeout(() => location.href = '/', 2000);
+        });
+
+        socket.on('disconnect', () => {
+            console.log('❌ Disconnected from server');
+            document.getElementById('connectionIndicator').classList.add('disconnected');
+            document.getElementById('connectionIndicator').classList.remove('connected');
+            document.getElementById('connectionStatus').textContent = 'Disconnected';
+            document.getElementById('statusText').textContent = 'Disconnected - Attempting to reconnect...';
+        });
+
+        // Update duration every second
+        setInterval(updateDuration, 1000);
+
+        // Initialize
+        initChart();
+    </script>
+</body>
+
+</html>

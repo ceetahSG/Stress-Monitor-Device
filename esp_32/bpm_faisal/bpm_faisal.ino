@@ -3,14 +3,15 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include "MAX30105.h"
-#include "heartRate.h" 
+#include "heartRate.h"
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 
 // --- WiFi Settings ---
-const char* ssid = "faisal";
-const char* password = "faisal@123";
-const char* serverUrl = "https://bpm.eruditech.com/api/record";
+const char* ssid = "cheetah";
+const char* password = "cheetah123";
+const char* serverUrl = "http://192.168.137.1:5000/api/real-time-data";
+const char* endSessionUrl = "http://192.168.137.1:5000/api/end-session";
 
 // --- Hardware ---
 #define MOTOR_PIN 4
@@ -22,10 +23,12 @@ const char* serverUrl = "https://bpm.eruditech.com/api/record";
 #define GRACE_PERIOD_MS 2000  
 #define STRESS_HIGH_THRESH 25 // Below 25 = High Stress
 #define STRESS_MED_THRESH 40  // Below 40 = Medium, Above 40 = OK
+#define IR_THRESHOLD 50000    // Finger detection threshold
 
 // --- Objects ---
 MAX30105 particleSensor;
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+HTTPClient http;
 
 // --- Global Variables ---
 struct Record {
@@ -35,6 +38,7 @@ struct Record {
 };
 Record sessionData[MAX_SAMPLES];
 int dataCount = 0;
+int currentSessionId = 0;
 
 // State Machine
 bool fingerPhysical = false;
@@ -46,7 +50,8 @@ bool inGracePeriod = false;
 unsigned long lastUiUpdate = 0;
 unsigned long lastDataLog = 0;
 unsigned long lastBeatTime = 0;
-unsigned long lastBeatDetectedTime = 0; // For blinking icon
+unsigned long lastBeatDetectedTime = 0;
+unsigned long lastWiFiCheck = 0;
 
 // Math Variables
 const byte RATE_SIZE = 4;
@@ -67,18 +72,25 @@ int estimatedSpO2 = 98;
 
 void setup() {
   Serial.begin(115200);
+  delay(1000);
+  
   pinMode(MOTOR_PIN, OUTPUT);
   digitalWrite(MOTOR_PIN, LOW);
 
-  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) for(;;);
+  // Initialize Display
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println("❌ Display failed!");
+    while(1);
+  }
   display.setTextColor(WHITE);
   
-  // Wifi & Sensor Init
+  // Connect WiFi
   showStatus("Connecting WiFi...");
-  WiFi.begin(ssid, password);
-  while(WiFi.status() != WL_CONNECTED) delay(500);
+  connectToWiFi();
 
+  // Initialize Sensor
   if (!particleSensor.begin(Wire, I2C_SPEED_FAST)) {
+    Serial.println("❌ Sensor Missing!");
     showStatus("Sensor Missing");
     while (1);
   }
@@ -87,18 +99,57 @@ void setup() {
   particleSensor.setPulseAmplitudeRed(0x0A);
   particleSensor.setPulseAmplitudeGreen(0); 
   
+  Serial.println("✅ Setup Complete!");
   showIdleScreen();
 }
 
+void connectToWiFi() {
+  Serial.print("🔗 Connecting to WiFi: ");
+  Serial.println(ssid);
+  
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+  
+  int attempts = 0;
+  while(WiFi.status() != WL_CONNECTED && attempts < 20) {
+    delay(500);
+    Serial.print(".");
+    attempts++;
+  }
+  
+  if(WiFi.status() == WL_CONNECTED) {
+    Serial.println();
+    Serial.println("✅ WiFi Connected!");
+    Serial.print("📍 IP: ");
+    Serial.println(WiFi.localIP());
+    
+    showStatus("WiFi OK");
+    delay(500);
+  } else {
+    Serial.println("\n❌ WiFi Failed!");
+    showStatus("WiFi Failed!");
+  }
+}
+
 void loop() {
+  // Check WiFi periodically
+  if (millis() - lastWiFiCheck > 5000) {
+    if(WiFi.status() != WL_CONNECTED) {
+      Serial.println("⚠️ WiFi disconnected - Reconnecting...");
+      connectToWiFi();
+    }
+    lastWiFiCheck = millis();
+  }
+
   // 1. READ SENSOR
   long irValue = particleSensor.getIR();
   long redValue = particleSensor.getRed();
 
   // 2. FINGER CHECK
-  if (irValue > 50000) {
+  if (irValue > IR_THRESHOLD) {
     if (!fingerPhysical) {
        // Finger just touched!
+       Serial.println("🎯 Finger detected - Starting session");
        fingerPhysical = true;
        inGracePeriod = false;
        if (!sessionActive) startSession(); 
@@ -106,6 +157,7 @@ void loop() {
   } else {
     if (fingerPhysical) {
        // Finger just removed
+       Serial.println("👋 Finger removed - Grace period started");
        fingerPhysical = false;
     }
   }
@@ -120,9 +172,11 @@ void loop() {
         inGracePeriod = false; 
 
         // Vibration Logic (Based on Category)
-        // High Stress (RMSSD < 25) triggers vibration
-        if (rmssd > 0 && rmssd < STRESS_HIGH_THRESH) digitalWrite(MOTOR_PIN, HIGH);
-        else digitalWrite(MOTOR_PIN, LOW);
+        if (rmssd > 0 && rmssd < STRESS_HIGH_THRESH) {
+          digitalWrite(MOTOR_PIN, HIGH);
+        } else {
+          digitalWrite(MOTOR_PIN, LOW);
+        }
 
      } else {
         // Finger Missing - Handle Grace Period
@@ -138,30 +192,29 @@ void loop() {
         }
      }
 
-     // 4. TIME-DRIVEN UPDATES (The Fix for Lag)
+     // 4. TIME-DRIVEN UPDATES
      unsigned long currentMillis = millis();
 
-     // A. UI Update (Every 250ms - Smooth Timer)
+     // A. UI Update (Every 250ms)
      if (currentMillis - lastUiUpdate > 250) {
         updateDisplay(); 
         lastUiUpdate = currentMillis;
      }
 
-     // B. Data Logging (Every 1000ms - Steady Graph)
+     // B. Data Logging (Every 1000ms)
      if (fingerPhysical && currentMillis - lastDataLog > 1000) {
         if (dataCount < MAX_SAMPLES) {
-           // TIMEOUT CHECK: Has it been > 2.5 seconds since the last real beat?
-           // If yes, we consider the current 'beatAvg' to be stale/old.
+           // Check if data is fresh
            bool isFresh = (millis() - lastBeatDetectedTime < 2500);
 
-           // If fresh, save the value. If stale, save 0.
            sessionData[dataCount].bpm = isFresh ? beatAvg : 0;
-           
-           // Keep SpO2 as is (it doesn't fluctuate as fast)
            sessionData[dataCount].spo2 = estimatedSpO2;
-           
-           // If BPM is stale, Stress is definitely stale/invalid
            sessionData[dataCount].stress = isFresh ? rmssd : 0;
+           
+           // Send to server
+           sendRealTimeData(sessionData[dataCount].bpm, 
+                           sessionData[dataCount].spo2, 
+                           sessionData[dataCount].stress);
            
            dataCount++;
         }
@@ -183,14 +236,16 @@ void loop() {
 
 void startSession() {
   sessionActive = true;
+  currentSessionId = 0;
   dataCount = 0;
   beatAvg = 0;
   rmssd = 0;
   rrIndex = 0;
   minRed = 200000; maxRed = 0;
   minIR = 200000; maxIR = 0;
-  lastDataLog = millis(); // Reset timer
-  display.clearDisplay(); // clear old screens
+  lastDataLog = millis();
+  display.clearDisplay();
+  Serial.println("📊 Session started");
 }
 
 void processSignal(long irValue, long redValue) {
@@ -198,7 +253,7 @@ void processSignal(long irValue, long redValue) {
   if (checkForBeat(irValue) == true) {
     long delta = millis() - lastBeatTime;
     lastBeatTime = millis();
-    lastBeatDetectedTime = millis(); // Record beat time for the icon
+    lastBeatDetectedTime = millis();
 
     if (delta > 250 && delta < 2000) {
        beatsPerMinute = 60 / (delta / 1000.0);
@@ -211,7 +266,7 @@ void processSignal(long irValue, long redValue) {
          beatAvg /= RATE_SIZE;
        }
 
-       // HRV
+       // HRV Calculation
        rrIntervals[rrIndex] = (float)delta;
        rrIndex = (rrIndex + 1) % 10;
        
@@ -228,7 +283,7 @@ void processSignal(long irValue, long redValue) {
     }
   }
 
-  // SpO2 Tracker
+  // SpO2 Tracking
   if (redValue < minRed) minRed = redValue;
   if (redValue > maxRed) maxRed = redValue;
   if (irValue < minIR) minIR = irValue;
@@ -236,7 +291,7 @@ void processSignal(long irValue, long redValue) {
 
   static int spo2Counter = 0;
   spo2Counter++;
-  if (spo2Counter > 500) { // Faster update
+  if (spo2Counter > 500) {
      double redAC = maxRed - minRed;
      double irAC = maxIR - minIR;
      if (irAC > 0 && redAC > 0) {
@@ -252,6 +307,107 @@ void processSignal(long irValue, long redValue) {
   }
 }
 
+void sendRealTimeData(int bpm, int spo2_val, float stress) {
+  if(WiFi.status() != WL_CONNECTED) {
+    Serial.println("⚠️ WiFi not connected");
+    return;
+  }
+
+  if(bpm == 0 && stress == 0) {
+    return; // Skip if data is stale
+  }
+
+  http.begin(serverUrl);
+  http.addHeader("Content-Type", "application/json");
+  
+  DynamicJsonDocument doc(256);
+  if(currentSessionId > 0) {
+    doc["session_id"] = currentSessionId;
+  }
+  doc["bpm"] = bpm;
+  doc["spo2"] = spo2_val;
+  doc["stress"] = stress;
+  
+  String jsonStr;
+  serializeJson(doc, jsonStr);
+  
+  Serial.print("📤 Sending: ");
+  Serial.println(jsonStr);
+  
+  int httpCode = http.POST(jsonStr);
+  
+  if (httpCode == 201 || httpCode == 200) {
+    DynamicJsonDocument response(256);
+    deserializeJson(response, http.getString());
+    
+    if (response.containsKey("session_id") && currentSessionId == 0) {
+      currentSessionId = response["session_id"];
+      Serial.printf("✅ Session ID: %d\n", currentSessionId);
+    }
+    
+    Serial.printf("✅ Data sent - BPM: %d, SpO2: %d, HRV: %.1f\n", 
+                  bpm, spo2_val, stress);
+  } else {
+    Serial.printf("❌ HTTP Error: %d\n", httpCode);
+  }
+  
+  http.end();
+}
+
+void endSessionAndUpload() {
+  sessionActive = false;
+  inGracePeriod = false;
+
+  Serial.println("🛑 Session ended - Uploading...");
+  
+  display.clearDisplay();
+  display.setCursor(0, 20);
+  display.setTextSize(2);
+  display.println("Saving...");
+  display.display();
+
+  if (WiFi.status() == WL_CONNECTED && currentSessionId > 0) {
+      http.begin(endSessionUrl);
+      http.addHeader("Content-Type", "application/json");
+
+      DynamicJsonDocument doc(256);
+      doc["session_id"] = currentSessionId;
+      
+      String jsonStr;
+      serializeJson(doc, jsonStr);
+      
+      int code = http.POST(jsonStr);
+      
+      if(code == 200) {
+        DynamicJsonDocument response(512);
+        deserializeJson(response, http.getString());
+        
+        Serial.printf("✅ Session ended - Avg BPM: %d, Avg SpO2: %d, Avg HRV: %.1f\n",
+                      (int)response["avg_bpm"],
+                      (int)response["avg_spo2"],
+                      (float)response["avg_stress"]);
+        
+        display.clearDisplay();
+        display.setCursor(0, 20);
+        display.setTextSize(2);
+        display.println("Saved!");
+        display.display();
+      } else {
+        Serial.printf("❌ Error: HTTP %d\n", code);
+        display.clearDisplay();
+        display.setCursor(0, 20);
+        display.println("Error");
+        display.display();
+      }
+      
+      http.end();
+  }
+  
+  delay(2000);
+  currentSessionId = 0;
+  dataCount = 0;
+}
+
 void updateDisplay() {
   display.clearDisplay();
   
@@ -259,21 +415,20 @@ void updateDisplay() {
   display.setTextSize(1);
   display.setCursor(0,0);
   if (inGracePeriod) {
+     int remaining = (GRACE_PERIOD_MS - (millis() - graceTimerStart)) / 100;
      display.print("Resume? "); 
-     display.print((GRACE_PERIOD_MS - (millis() - graceTimerStart))/100);
+     display.print(remaining);
   } else {
      display.print("Time: "); display.print(dataCount); display.print("s");
   }
 
-  // 2. Heart Icon (Blinks for 100ms after a beat)
+  // 2. Heart Icon (Blinks for 150ms after a beat)
   bool beatFlash = (millis() - lastBeatDetectedTime < 150);
   if (beatFlash) {
-    // Filled Heart
     display.fillCircle(118, 5, 4, WHITE);
     display.fillCircle(124, 5, 4, WHITE);
     display.fillTriangle(114, 5, 128, 5, 121, 14, WHITE);
   } else {
-    // Empty Heart (Outline)
     display.drawCircle(118, 5, 4, WHITE);
     display.drawCircle(124, 5, 4, WHITE);
     display.drawLine(114, 5, 121, 14, WHITE);
@@ -305,65 +460,6 @@ void updateDisplay() {
   display.print("Str: "); display.print(stressStr);
   
   display.display();
-}
-
-void endSessionAndUpload() {
-  sessionActive = false;
-  inGracePeriod = false;
-
-  display.clearDisplay();
-  display.setCursor(0, 20);
-  display.setTextSize(2);
-  display.println("Uploading...");
-  display.display();
-
-  if (WiFi.status() == WL_CONNECTED && dataCount > 5) {
-      HTTPClient http;
-      http.begin(serverUrl);
-      http.addHeader("Content-Type", "application/json");
-
-      // Use a smaller document if memory is tight, but 16k is usually fine for 2 mins
-      DynamicJsonDocument doc(16384);
-      JsonArray readings = doc.createNestedArray("readings");
-      
-      long sumBPM = 0;
-      long sumSpO2 = 0;
-      float sumStress = 0;
-      int validCount = 0;
-      
-      for(int i=0; i<dataCount; i++) {
-         if(sessionData[i].bpm > 0) { // Basic filter
-           JsonObject r = readings.createNestedObject();
-           r["o"] = i;
-           r["b"] = sessionData[i].bpm;
-           r["s"] = sessionData[i].spo2;
-           r["h"] = sessionData[i].stress;
-           
-           sumBPM += sessionData[i].bpm;
-           sumSpO2 += sessionData[i].spo2;
-           sumStress += sessionData[i].stress;
-           validCount++;
-         }
-      }
-      
-      if(validCount > 0) {
-        doc["avg_bpm"] = sumBPM / validCount;
-        doc["avg_spo2"] = sumSpO2 / validCount;
-        doc["avg_stress"] = sumStress / validCount;
-        
-        String jsonStr;
-        serializeJson(doc, jsonStr);
-        int code = http.POST(jsonStr);
-        
-        display.clearDisplay();
-        display.setCursor(0, 20);
-        if(code == 200 || code == 201) display.println("Saved!");
-        else display.println("Error");
-        display.display();
-      }
-      delay(2000);
-  }
-  dataCount = 0;
 }
 
 void showStatus(const char* msg) {
