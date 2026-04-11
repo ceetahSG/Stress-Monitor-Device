@@ -8,9 +8,9 @@
 #include <Adafruit_SSD1306.h>
 
 // --- WiFi Settings ---
-const char* ssid = "cheetah";
-const char* password = "cheetah123";
-const char* serverUrl = "http://192.168.137.1:5000/api/real-time-data";
+const char* ssid = "chetah";
+const char* password = "chetah123";
+const char* serverUrl = "http://172.20.10.2:5000/api/real-time-data";
 const char* endSessionUrl = "http://192.168.137.1:5000/api/end-session";
 
 // --- Hardware ---
