@@ -11,7 +11,7 @@
 const char* ssid = "chetah";
 const char* password = "chetah123";
 const char* serverUrl = "http://172.20.10.2:5000/api/real-time-data";
-const char* endSessionUrl = "http://192.168.137.1:5000/api/end-session";
+const char* endSessionUrl = "http://172.20.10.2:5000/api/end-session";
 
 // --- Hardware ---
 #define MOTOR_PIN 4
@@ -19,11 +19,8 @@ const char* endSessionUrl = "http://192.168.137.1:5000/api/end-session";
 #define SCREEN_HEIGHT 64
 
 // --- Logic Constants ---
-#define MAX_SAMPLES 120       // 2 Minutes
 #define GRACE_PERIOD_MS 2000  
-#define STRESS_HIGH_THRESH 25 // Below 25 = High Stress
-#define STRESS_MED_THRESH 40  // Below 40 = Medium, Above 40 = OK
-#define IR_THRESHOLD 50000    // Finger detection threshold
+#define IR_THRESHOLD 50000
 
 // --- Objects ---
 MAX30105 particleSensor;
@@ -31,13 +28,6 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 HTTPClient http;
 
 // --- Global Variables ---
-struct Record {
-  int bpm;
-  int spo2;
-  float stress;
-};
-Record sessionData[MAX_SAMPLES];
-int dataCount = 0;
 int currentSessionId = 0;
 
 // State Machine
@@ -46,12 +36,13 @@ bool sessionActive = false;
 unsigned long graceTimerStart = 0;
 bool inGracePeriod = false;
 
-// Timers for UI
+// Timers
 unsigned long lastUiUpdate = 0;
 unsigned long lastDataLog = 0;
 unsigned long lastBeatTime = 0;
 unsigned long lastBeatDetectedTime = 0;
 unsigned long lastWiFiCheck = 0;
+unsigned long sessionStartTime = 0;
 
 // Math Variables
 const byte RATE_SIZE = 4;
@@ -60,10 +51,10 @@ byte rateSpot = 0;
 float beatsPerMinute;
 int beatAvg = 0;
 
-// HRV
-float rrIntervals[10];
-int rrIndex = 0;
-float rmssd = 0;
+// BEAT VARIABILITY FOR STRESS
+float lastBeatInterval = 0;
+float beatIntervalVariation = 0;
+float stress = 20;
 
 // SpO2 Estimator
 double minRed = 200000, maxRed = 0;
@@ -77,18 +68,15 @@ void setup() {
   pinMode(MOTOR_PIN, OUTPUT);
   digitalWrite(MOTOR_PIN, LOW);
 
-  // Initialize Display
   if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
     Serial.println("❌ Display failed!");
     while(1);
   }
   display.setTextColor(WHITE);
   
-  // Connect WiFi
   showStatus("Connecting WiFi...");
   connectToWiFi();
 
-  // Initialize Sensor
   if (!particleSensor.begin(Wire, I2C_SPEED_FAST)) {
     Serial.println("❌ Sensor Missing!");
     showStatus("Sensor Missing");
@@ -132,54 +120,44 @@ void connectToWiFi() {
 }
 
 void loop() {
-  // Check WiFi periodically
   if (millis() - lastWiFiCheck > 5000) {
     if(WiFi.status() != WL_CONNECTED) {
-      Serial.println("⚠️ WiFi disconnected - Reconnecting...");
+      Serial.println("⚠️ WiFi disconnected");
       connectToWiFi();
     }
     lastWiFiCheck = millis();
   }
 
-  // 1. READ SENSOR
   long irValue = particleSensor.getIR();
   long redValue = particleSensor.getRed();
 
-  // 2. FINGER CHECK
+  // Finger detection
   if (irValue > IR_THRESHOLD) {
     if (!fingerPhysical) {
-       // Finger just touched!
-       Serial.println("🎯 Finger detected - Starting session");
+       Serial.println("🎯 Finger detected");
        fingerPhysical = true;
        inGracePeriod = false;
        if (!sessionActive) startSession(); 
     }
   } else {
     if (fingerPhysical) {
-       // Finger just removed
-       Serial.println("👋 Finger removed - Grace period started");
+       Serial.println("👋 Finger removed");
        fingerPhysical = false;
     }
   }
 
-  // 3. LOGIC HANDLER
   if (sessionActive) {
      if (fingerPhysical) {
-        // Normal Operation
         processSignal(irValue, redValue);
-        
-        // Reset grace period flag if we recovered
         inGracePeriod = false; 
 
-        // Vibration Logic (Based on Category)
-        if (rmssd > 0 && rmssd < STRESS_HIGH_THRESH) {
+        if (stress > 60) {
           digitalWrite(MOTOR_PIN, HIGH);
         } else {
           digitalWrite(MOTOR_PIN, LOW);
         }
 
      } else {
-        // Finger Missing - Handle Grace Period
         digitalWrite(MOTOR_PIN, LOW);
         
         if (!inGracePeriod) {
@@ -192,37 +170,20 @@ void loop() {
         }
      }
 
-     // 4. TIME-DRIVEN UPDATES
      unsigned long currentMillis = millis();
 
-     // A. UI Update (Every 250ms)
      if (currentMillis - lastUiUpdate > 250) {
         updateDisplay(); 
         lastUiUpdate = currentMillis;
      }
 
-     // B. Data Logging (Every 1000ms)
+     // INFINITE: Send data every second, no 120s limit!
      if (fingerPhysical && currentMillis - lastDataLog > 1000) {
-        if (dataCount < MAX_SAMPLES) {
-           // Check if data is fresh
-           bool isFresh = (millis() - lastBeatDetectedTime < 2500);
-
-           sessionData[dataCount].bpm = isFresh ? beatAvg : 0;
-           sessionData[dataCount].spo2 = estimatedSpO2;
-           sessionData[dataCount].stress = isFresh ? rmssd : 0;
-           
-           // Send to server
-           sendRealTimeData(sessionData[dataCount].bpm, 
-                           sessionData[dataCount].spo2, 
-                           sessionData[dataCount].stress);
-           
-           dataCount++;
-        }
+        sendRealTimeData(beatAvg, estimatedSpO2, stress);
         lastDataLog = currentMillis;
      }
 
   } else {
-     // Idle Mode
      digitalWrite(MOTOR_PIN, LOW);
      static long lastIdle = 0;
      if (millis() - lastIdle > 1000) {
@@ -232,24 +193,22 @@ void loop() {
   }
 }
 
-// --- LOGIC FUNCTIONS ---
-
 void startSession() {
   sessionActive = true;
   currentSessionId = 0;
-  dataCount = 0;
   beatAvg = 0;
-  rmssd = 0;
-  rrIndex = 0;
+  stress = 20;
+  lastBeatInterval = 0;
+  beatIntervalVariation = 0;
   minRed = 200000; maxRed = 0;
   minIR = 200000; maxIR = 0;
   lastDataLog = millis();
+  sessionStartTime = millis();
   display.clearDisplay();
-  Serial.println("📊 Session started");
+  Serial.println("📊 Session started - INFINITE MODE");
 }
 
 void processSignal(long irValue, long redValue) {
-  // Beat Detection
   if (checkForBeat(irValue) == true) {
     long delta = millis() - lastBeatTime;
     lastBeatTime = millis();
@@ -266,20 +225,25 @@ void processSignal(long irValue, long redValue) {
          beatAvg /= RATE_SIZE;
        }
 
-       // HRV Calculation
-       rrIntervals[rrIndex] = (float)delta;
-       rrIndex = (rrIndex + 1) % 10;
-       
-       float sumSqDiff = 0;
-       int validPairs = 0;
-       for (int i=0; i<9; i++) {
-          if (rrIntervals[i] > 0 && rrIntervals[i+1] > 0) {
-             float diff = rrIntervals[i] - rrIntervals[i+1];
-             sumSqDiff += (diff * diff);
-             validPairs++;
+       if (lastBeatInterval > 0) {
+          float intervalDiff = abs(delta - lastBeatInterval);
+          beatIntervalVariation = (0.7 * beatIntervalVariation) + (0.3 * intervalDiff);
+          
+          if (beatIntervalVariation < 20) {
+             stress = 70.0 + (20.0 - beatIntervalVariation) * 1.5;
+          } 
+          else if (beatIntervalVariation < 50) {
+             stress = 40.0 + ((50.0 - beatIntervalVariation) / 30.0) * 30.0;
+          } 
+          else {
+             stress = (beatIntervalVariation - 50.0) / 10.0;
           }
+
+          if (stress < 0) stress = 0;
+          if (stress > 100) stress = 100;
        }
-       if(validPairs > 0) rmssd = sqrt(sumSqDiff / validPairs);
+
+       lastBeatInterval = delta;
     }
   }
 
@@ -307,16 +271,20 @@ void processSignal(long irValue, long redValue) {
   }
 }
 
-void sendRealTimeData(int bpm, int spo2_val, float stress) {
+void sendRealTimeData(int bpm, int spo2_val, float stress_val) {
   if(WiFi.status() != WL_CONNECTED) {
-    Serial.println("⚠️ WiFi not connected");
+    connectToWiFi();
+    delay(1000);
+    if(WiFi.status() != WL_CONNECTED) {
+      return;
+    }
+  }
+
+  if(bpm == 0 && stress_val == 0) {
     return;
   }
 
-  if(bpm == 0 && stress == 0) {
-    return; // Skip if data is stale
-  }
-
+  http.end();
   http.begin(serverUrl);
   http.addHeader("Content-Type", "application/json");
   
@@ -326,7 +294,7 @@ void sendRealTimeData(int bpm, int spo2_val, float stress) {
   }
   doc["bpm"] = bpm;
   doc["spo2"] = spo2_val;
-  doc["stress"] = stress;
+  doc["stress"] = stress_val;
   
   String jsonStr;
   serializeJson(doc, jsonStr);
@@ -337,16 +305,17 @@ void sendRealTimeData(int bpm, int spo2_val, float stress) {
   int httpCode = http.POST(jsonStr);
   
   if (httpCode == 201 || httpCode == 200) {
-    DynamicJsonDocument response(256);
-    deserializeJson(response, http.getString());
+    String response = http.getString();
+    DynamicJsonDocument responseDoc(256);
+    deserializeJson(responseDoc, response);
     
-    if (response.containsKey("session_id") && currentSessionId == 0) {
-      currentSessionId = response["session_id"];
+    if (responseDoc.containsKey("session_id") && currentSessionId == 0) {
+      currentSessionId = responseDoc["session_id"];
       Serial.printf("✅ Session ID: %d\n", currentSessionId);
     }
     
-    Serial.printf("✅ Data sent - BPM: %d, SpO2: %d, HRV: %.1f\n", 
-                  bpm, spo2_val, stress);
+    Serial.printf("✅ Data sent - BPM: %d, SpO2: %d, Stress: %.1f\n", 
+                  bpm, spo2_val, stress_val);
   } else {
     Serial.printf("❌ HTTP Error: %d\n", httpCode);
   }
@@ -358,7 +327,8 @@ void endSessionAndUpload() {
   sessionActive = false;
   inGracePeriod = false;
 
-  Serial.println("🛑 Session ended - Uploading...");
+  unsigned long sessionDuration = (millis() - sessionStartTime) / 1000;
+  Serial.printf("🛑 Session ended after %lu seconds\n", sessionDuration);
   
   display.clearDisplay();
   display.setCursor(0, 20);
@@ -372,21 +342,13 @@ void endSessionAndUpload() {
 
       DynamicJsonDocument doc(256);
       doc["session_id"] = currentSessionId;
-      
       String jsonStr;
       serializeJson(doc, jsonStr);
       
       int code = http.POST(jsonStr);
       
       if(code == 200) {
-        DynamicJsonDocument response(512);
-        deserializeJson(response, http.getString());
-        
-        Serial.printf("✅ Session ended - Avg BPM: %d, Avg SpO2: %d, Avg HRV: %.1f\n",
-                      (int)response["avg_bpm"],
-                      (int)response["avg_spo2"],
-                      (float)response["avg_stress"]);
-        
+        Serial.println("✅ Session saved");
         display.clearDisplay();
         display.setCursor(0, 20);
         display.setTextSize(2);
@@ -394,10 +356,6 @@ void endSessionAndUpload() {
         display.display();
       } else {
         Serial.printf("❌ Error: HTTP %d\n", code);
-        display.clearDisplay();
-        display.setCursor(0, 20);
-        display.println("Error");
-        display.display();
       }
       
       http.end();
@@ -405,37 +363,26 @@ void endSessionAndUpload() {
   
   delay(2000);
   currentSessionId = 0;
-  dataCount = 0;
 }
 
 void updateDisplay() {
   display.clearDisplay();
   
-  // 1. Timer
+  unsigned long elapsed = (millis() - sessionStartTime) / 1000;
+  
   display.setTextSize(1);
   display.setCursor(0,0);
-  if (inGracePeriod) {
-     int remaining = (GRACE_PERIOD_MS - (millis() - graceTimerStart)) / 100;
-     display.print("Resume? "); 
-     display.print(remaining);
-  } else {
-     display.print("Time: "); display.print(dataCount); display.print("s");
-  }
+  display.print("Time: "); display.print(elapsed); display.print("s");
 
-  // 2. Heart Icon (Blinks for 150ms after a beat)
   bool beatFlash = (millis() - lastBeatDetectedTime < 150);
   if (beatFlash) {
     display.fillCircle(118, 5, 4, WHITE);
     display.fillCircle(124, 5, 4, WHITE);
-    display.fillTriangle(114, 5, 128, 5, 121, 14, WHITE);
   } else {
     display.drawCircle(118, 5, 4, WHITE);
     display.drawCircle(124, 5, 4, WHITE);
-    display.drawLine(114, 5, 121, 14, WHITE);
-    display.drawLine(128, 5, 121, 14, WHITE);
   }
 
-  // 3. Hero BPM
   display.setCursor(35, 18);
   display.setTextSize(3); 
   display.print(beatAvg > 0 ? String(beatAvg) : "--");
@@ -444,20 +391,18 @@ void updateDisplay() {
   display.setCursor(95, 35);
   display.print("BPM");
 
-  // 4. Footer
   display.drawLine(0, 48, 128, 48, WHITE);
   display.setCursor(0, 54);
   display.print("SpO2: "); display.print(estimatedSpO2); display.print("%");
   
-  // 5. Stress Category
   display.setCursor(70, 54);
-  String stressStr = "WAIT";
-  if (rmssd > 0) {
-     if (rmssd < STRESS_HIGH_THRESH) stressStr = "HIGH";
-     else if (rmssd < STRESS_MED_THRESH) stressStr = "MED";
-     else stressStr = "OK";
+  String stressStr = "OK";
+  if (stress > 0) {
+     if (stress > 70) stressStr = "HIGH";
+     else if (stress > 40) stressStr = "MED";
+     else stressStr = "LOW";
   }
-  display.print("Str: "); display.print(stressStr);
+  display.print("Str: "); display.print((int)stress);
   
   display.display();
 }
