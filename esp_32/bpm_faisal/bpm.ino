@@ -8,10 +8,10 @@
 #include <Adafruit_SSD1306.h>
 
 // --- WiFi Settings ---
-const char* ssid = "chetah";
-const char* password = "chetah123";
-const char* serverUrl = "http://172.20.10.2:5000/api/real-time-data";
-const char* endSessionUrl = "http://172.20.10.2:5000/api/end-session";
+const char* ssid = "Zenetic Esports";
+const char* password = "oneStudio";
+const char* serverUrl = "http://192.168.0.179:5000/api/real-time-data";
+const char* endSessionUrl = "http://192.168.0.179:5000/api/end-session";
 
 // --- Hardware ---
 #define MOTOR_PIN 4
