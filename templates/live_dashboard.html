@@ -256,7 +256,9 @@
 
         <div class="status-bar">
             <div id="statusText">Waiting for data...</div>
-            <button class="btn-stop" onclick="stopSession()">Stop Session</button>
+            <button class="btn-stop" onclick="stopSession()">
+                Finish Session
+            </button>
         </div>
 
         <div class="charts-grid">
@@ -464,9 +466,9 @@
         }
 
         function updateDisplay(bpm, spo2, stress) {
-            document.getElementById('bpm').textContent = bpm || '--';
-            document.getElementById('spo2').textContent = spo2 || '--';
-            document.getElementById('stress').textContent = stress ? stress.toFixed(1) : '--';
+            document.getElementById('bpm').textContent = (bpm !== null && bpm !== undefined) ? bpm : '--';
+            document.getElementById('spo2').textContent = (spo2 !== null && spo2 !== undefined) ? spo2 : '--';
+            document.getElementById('stress').textContent = (stress !== null && stress !== undefined) ? stress.toFixed(1) : '--';
 
             // Update stress status
             let stressText = 'Waiting...';
@@ -569,8 +571,23 @@
 
         socket.on('session_ended', (data) => {
             console.log('🛑 Session ended:', data);
-            alert(`Session ended!\nAvg BPM: ${data.avg_bpm}\nAvg SpO2: ${data.avg_spo2}\nAvg HRV: ${data.avg_stress.toFixed(2)}`);
-            setTimeout(() => location.href = '/', 2000);
+
+            updateDisplay(
+                data.avg_bpm,
+                data.avg_spo2,
+                data.avg_stress
+            );
+
+            document.getElementById('statusText').textContent =
+                `Session ${data.session_id} saved | ` +
+                `Average BPM: ${data.avg_bpm} | ` +
+                `Average SpO2: ${data.avg_spo2}%`;
+
+            // Automatic sensor removal ended the session.
+            // Return to the history page so the completed session is visible.
+            setTimeout(() => {
+                window.location.href = '/';
+            }, 1500);
         });
 
         socket.on('disconnect', () => {

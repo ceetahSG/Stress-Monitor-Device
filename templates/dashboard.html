@@ -219,6 +219,15 @@
     <script>
         let detailChart = null;
 
+        // Same thresholds as the live dashboard: stress is a 0-100 score
+        // where HIGHER means MORE stressed (it's derived from RMSSD, where
+        // lower beat-to-beat variability = more stress).
+        function stressColor(score) {
+            if (score > 70) return '#e74c3c';  // high
+            if (score > 40) return '#f39c12';  // medium
+            return '#2ecc71';                  // ok/relaxed
+        }
+
         function loadSessions() {
             fetch('/api/sessions')
                 .then(r => r.json())
@@ -246,8 +255,8 @@
                                     <div class="stat-value">${session.avg_spo2}%</div>
                                 </div>
                                 <div class="stat">
-                                    <div class="stat-label">HRV</div>
-                                    <div class="stat-value">${session.avg_stress.toFixed(1)}</div>
+                                    <div class="stat-label">Stress</div>
+                                    <div class="stat-value" style="color: ${stressColor(session.avg_stress)}">${session.avg_stress.toFixed(0)}</div>
                                 </div>
                             </div>
                         </div>
@@ -287,7 +296,7 @@
                                     yAxisID: 'y1'
                                 },
                                 {
-                                    label: 'Stress (HRV)',
+                                    label: 'Stress Score (0-100)',
                                     data: data.stress,
                                     borderColor: '#f39c12',
                                     backgroundColor: 'rgba(243, 156, 18, 0.1)',
@@ -317,7 +326,9 @@
                                     type: 'linear',
                                     display: true,
                                     position: 'right',
-                                    title: { display: true, text: 'Stress (ms)' }
+                                    min: 0,
+                                    max: 100,
+                                    title: { display: true, text: 'Stress Score (0-100)' }
                                 }
                             }
                         }
