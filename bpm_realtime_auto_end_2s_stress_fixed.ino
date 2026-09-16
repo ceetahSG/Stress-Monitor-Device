@@ -14,8 +14,8 @@
 // --- WiFi Settings ---
 const char *ssid = "Zenetic Esports";
 const char *password = "oneStudio";
-const char *serverUrl = "http://192.168.0.178:5000/api/real-time-data";
-const char *endSessionUrl = "http://192.168.0.178:5000/api/end-session";
+const char *serverUrl = "http://172.20.10.2:5000/api/real-time-data";
+const char *endSessionUrl = "http://172.20.10.2:5000/api/end-session";
 
 // --- Hardware ---
 #define MOTOR_PIN 4
@@ -23,10 +23,10 @@ const char *endSessionUrl = "http://192.168.0.178:5000/api/end-session";
 #define SCREEN_HEIGHT 64
 
 // --- Logic Constants ---
-#define GRACE_PERIOD_MS 2000     // Automatically end session 2 seconds after finger removal
-#define STRESS_HIGH_SCORE_THRESH 70  // 70-100 = High Stress
-#define STRESS_MED_SCORE_THRESH 40   // 40-69 = Medium Stress; below 40 = Low Stress
-#define BEAT_STALE_MS 2500     // If no real beat in this long, treat the current BPM as stale
+#define GRACE_PERIOD_MS 2000        // Automatically end session 2 seconds after finger removal
+#define STRESS_HIGH_SCORE_THRESH 70 // 70-100 = High Stress
+#define STRESS_MED_SCORE_THRESH 40  // 40-69 = Medium Stress; below 40 = Low Stress
+#define BEAT_STALE_MS 2500          // If no real beat in this long, treat the current BPM as stale
 
 // --- Objects ---
 MAX30105 particleSensor;
@@ -48,9 +48,9 @@ bool inGracePeriod = false;
 unsigned long lastUiUpdate = 0;
 unsigned long lastDataLog = 0;
 unsigned long lastBeatTime = 0;
-unsigned long lastBeatDetectedTime = 0;  // For blinking icon
+unsigned long lastBeatDetectedTime = 0; // For blinking icon
 unsigned long lastWiFiCheck = 0;
-unsigned long sessionStartTime = 0;  // Used for the on-screen timer now that dataCount is gone
+unsigned long sessionStartTime = 0; // Used for the on-screen timer now that dataCount is gone
 
 // Network uploads run on the ESP32 WiFi/core task instead of inside the
 // sensor-reading loop. This prevents HTTP/TCP operations from blocking
@@ -66,7 +66,7 @@ float pendingStress = 0.0f;
 const byte RATE_SIZE = 4;
 byte rates[RATE_SIZE];
 byte rateSpot = 0;
-byte samplesCollected = 0;  // FIX: only average over slots that hold a real reading (see note at bottom)
+byte samplesCollected = 0; // FIX: only average over slots that hold a real reading (see note at bottom)
 float beatsPerMinute;
 int beatAvg = 0;
 
@@ -85,13 +85,13 @@ float prevRR = 0;
 float sqDiffBuffer[RMSSD_WINDOW];
 int sqDiffIndex = 0;
 int sqDiffCount = 0;
-const int RMSSD_MIN_DIFFS = 3;  // don't trust/report a score on 1-2 diffs alone
+const int RMSSD_MIN_DIFFS = 3; // don't trust/report a score on 1-2 diffs alone
 float rmssd = 0;
-float avgRR = 0;  // running-average RR interval, used to catch outlier beats
+float avgRR = 0; // running-average RR interval, used to catch outlier beats
 int consecutiveOutliers = 0;
-const int MAX_CONSECUTIVE_OUTLIERS = 3;  // after this many rejections in a
-                                          // row, trust the new rate instead
-                                          // of staying stuck on a stale one
+const int MAX_CONSECUTIVE_OUTLIERS = 3; // after this many rejections in a
+                                        // row, trust the new rate instead
+                                        // of staying stuck on a stale one
 
 // SpO2 Estimator
 double minRed = 200000, maxRed = 0;
@@ -109,8 +109,8 @@ float stressScoreFromRMSSD(float rmssdVal);
 void showStatus(const char *msg);
 void showIdleScreen();
 
-
-void setup() {
+void setup()
+{
   Serial.begin(115200);
   pinMode(MOTOR_PIN, OUTPUT);
   digitalWrite(MOTOR_PIN, LOW);
@@ -124,7 +124,8 @@ void setup() {
   showStatus("Connecting WiFi...");
   connectToWiFi();
 
-  if (!particleSensor.begin(Wire, I2C_SPEED_FAST)) {
+  if (!particleSensor.begin(Wire, I2C_SPEED_FAST))
+  {
     showStatus("Sensor Missing");
     while (1)
       ;
@@ -135,36 +136,42 @@ void setup() {
   particleSensor.setPulseAmplitudeGreen(0);
 
   uploadMutex = xSemaphoreCreateMutex();
-  if (uploadMutex != nullptr) {
+  if (uploadMutex != nullptr)
+  {
     xTaskCreatePinnedToCore(
-      realTimeUploadTask,
-      "RTUpload",
-      8192,
-      nullptr,
-      1,
-      &uploadTaskHandle,
-      0);
+        realTimeUploadTask,
+        "RTUpload",
+        8192,
+        nullptr,
+        1,
+        &uploadTaskHandle,
+        0);
   }
 
   showIdleScreen();
 }
 
-void connectToWiFi() {
+void connectToWiFi()
+{
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
 
   int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 40) {
+  while (WiFi.status() != WL_CONNECTED && attempts < 40)
+  {
     delay(500);
     attempts++;
   }
 }
 
-void loop() {
+void loop()
+{
   // Real-time streaming needs a live connection, so reconnect quietly
   // in the background if WiFi ever drops mid-session.
-  if (millis() - lastWiFiCheck > 5000) {
-    if (WiFi.status() != WL_CONNECTED) {
+  if (millis() - lastWiFiCheck > 5000)
+  {
+    if (WiFi.status() != WL_CONNECTED)
+    {
       connectToWiFi();
     }
     lastWiFiCheck = millis();
@@ -175,24 +182,31 @@ void loop() {
   long redValue = particleSensor.getRed();
 
   // 2. FINGER CHECK
-  if (irValue > 50000) {
-    if (!fingerPhysical) {
+  if (irValue > 50000)
+  {
+    if (!fingerPhysical)
+    {
       // Finger just touched!
       fingerPhysical = true;
       inGracePeriod = false;
       if (!sessionActive)
         startSession();
     }
-  } else {
-    if (fingerPhysical) {
+  }
+  else
+  {
+    if (fingerPhysical)
+    {
       // Finger just removed
       fingerPhysical = false;
     }
   }
 
   // 3. LOGIC HANDLER
-  if (sessionActive) {
-    if (fingerPhysical) {
+  if (sessionActive)
+  {
+    if (fingerPhysical)
+    {
       // Normal Operation
       processSignal(irValue, redValue);
 
@@ -206,15 +220,21 @@ void loop() {
         digitalWrite(MOTOR_PIN, HIGH);
       else
         digitalWrite(MOTOR_PIN, LOW);
-    } else {
+    }
+    else
+    {
       // Finger Missing - Handle Grace Period
       digitalWrite(MOTOR_PIN, LOW);
 
-      if (!inGracePeriod) {
+      if (!inGracePeriod)
+      {
         inGracePeriod = true;
         graceTimerStart = millis();
-      } else {
-        if (millis() - graceTimerStart >= GRACE_PERIOD_MS) {
+      }
+      else
+      {
+        if (millis() - graceTimerStart >= GRACE_PERIOD_MS)
+        {
           endSessionAndUpload();
         }
       }
@@ -224,7 +244,8 @@ void loop() {
     unsigned long currentMillis = millis();
 
     // A. UI Update (Every 250ms - Smooth Timer)
-    if (currentMillis - lastUiUpdate > 250) {
+    if (currentMillis - lastUiUpdate > 250)
+    {
       updateDisplay();
       lastUiUpdate = currentMillis;
     }
@@ -234,21 +255,25 @@ void loop() {
     // this loop long enough to make MAX30105 beat sampling miss beats.
     // We only copy the latest values; a separate FreeRTOS task performs
     // the network upload.
-    if (fingerPhysical && currentMillis - lastDataLog > 1000) {
+    if (fingerPhysical && currentMillis - lastDataLog > 1000)
+    {
       bool isFresh = (millis() - lastBeatDetectedTime < BEAT_STALE_MS);
 
       queueRealTimeData(
-        isFresh ? beatAvg : 0,
-        estimatedSpO2,
-        isFresh ? stressScoreFromRMSSD(rmssd) : 0);
+          isFresh ? beatAvg : 0,
+          estimatedSpO2,
+          isFresh ? stressScoreFromRMSSD(rmssd) : 0);
 
       lastDataLog = currentMillis;
     }
-  } else {
+  }
+  else
+  {
     // Idle Mode
     digitalWrite(MOTOR_PIN, LOW);
     static long lastIdle = 0;
-    if (millis() - lastIdle > 1000) {
+    if (millis() - lastIdle > 1000)
+    {
       showIdleScreen();
       lastIdle = millis();
     }
@@ -257,11 +282,13 @@ void loop() {
 
 // --- LOGIC FUNCTIONS ---
 
-void startSession() {
+void startSession()
+{
   sessionActive = true;
-  currentSessionId = 0;  // Tells the server "start a new session" on the next POST
+  currentSessionId = 0; // Tells the server "start a new session" on the next POST
   if (uploadMutex != nullptr &&
-      xSemaphoreTake(uploadMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+      xSemaphoreTake(uploadMutex, pdMS_TO_TICKS(20)) == pdTRUE)
+  {
     uploadPending = false;
     pendingBpm = 0;
     pendingSpo2 = 0;
@@ -292,22 +319,26 @@ void startSession() {
   maxIR = 0;
   lastDataLog = millis();
   sessionStartTime = millis();
-  display.clearDisplay();  // clear old screens
+  display.clearDisplay(); // clear old screens
 }
 
-void processSignal(long irValue, long redValue) {
+void processSignal(long irValue, long redValue)
+{
   // Beat Detection
-  if (checkForBeat(irValue) == true) {
+  if (checkForBeat(irValue) == true)
+  {
     long delta = millis() - lastBeatTime;
     lastBeatTime = millis();
-    lastBeatDetectedTime = millis();  // Record beat time for the icon
+    lastBeatDetectedTime = millis(); // Record beat time for the icon
 
-    if (delta > 250 && delta < 2000) {
+    if (delta > 250 && delta < 2000)
+    {
       Serial.print("delta=");
       Serial.println(delta);
       beatsPerMinute = 60 / (delta / 1000.0);
 
-      if (beatsPerMinute < 255 && beatsPerMinute > 20) {
+      if (beatsPerMinute < 255 && beatsPerMinute > 20)
+      {
         rates[rateSpot++] = (byte)beatsPerMinute;
         rateSpot %= RATE_SIZE;
 
@@ -340,18 +371,24 @@ void processSignal(long irValue, long redValue) {
       // baseline and gets rejected forever - a permanent lockup. To prevent
       // that, count consecutive rejections; after too many in a row, trust
       // that this is the new normal, recalibrate to it, and resume.
-      if (prevRR > 0) {
+      if (prevRR > 0)
+      {
         bool isOutlier = avgRR > 0 && fabs(delta - avgRR) > 0.35 * avgRR;
 
-        if (isOutlier) {
+        if (isOutlier)
+        {
           consecutiveOutliers++;
         }
 
-        if (isOutlier && consecutiveOutliers < MAX_CONSECUTIVE_OUTLIERS) {
+        if (isOutlier && consecutiveOutliers < MAX_CONSECUTIVE_OUTLIERS)
+        {
           // Reject this beat only - don't diff it, don't move prevRR or
           // avgRR forward yet, in case it really was just one bad beat.
-        } else {
-          if (isOutlier) {
+        }
+        else
+        {
+          if (isOutlier)
+          {
             // Forced recalibration: too many "outliers" in a row means the
             // baseline itself is stale, not the beats. Accept this beat as
             // the new normal but don't diff it against the old, no-longer-
@@ -359,7 +396,9 @@ void processSignal(long irValue, long redValue) {
             prevRR = delta;
             avgRR = delta;
             consecutiveOutliers = 0;
-          } else {
+          }
+          else
+          {
             float diff = delta - prevRR;
             sqDiffBuffer[sqDiffIndex] = diff * diff;
             sqDiffIndex = (sqDiffIndex + 1) % RMSSD_WINDOW;
@@ -373,7 +412,8 @@ void processSignal(long irValue, long redValue) {
             // Require a few diffs before trusting the number - one huge
             // outlier delta shouldn't single-handedly swing RMSSD from 0
             // to 700+.
-            if (sqDiffCount >= RMSSD_MIN_DIFFS) {
+            if (sqDiffCount >= RMSSD_MIN_DIFFS)
+            {
               rmssd = sqrt(sumSqDiff / sqDiffCount);
             }
 
@@ -382,7 +422,9 @@ void processSignal(long irValue, long redValue) {
             consecutiveOutliers = 0;
           }
         }
-      } else {
+      }
+      else
+      {
         prevRR = delta;
         avgRR = delta;
         consecutiveOutliers = 0;
@@ -407,10 +449,12 @@ void processSignal(long irValue, long redValue) {
 
   static int spo2Counter = 0;
   spo2Counter++;
-  if (spo2Counter > 500) {  // Faster update
+  if (spo2Counter > 500)
+  { // Faster update
     double redAC = maxRed - minRed;
     double irAC = maxIR - minIR;
-    if (irAC > 0 && redAC > 0) {
+    if (irAC > 0 && redAC > 0)
+    {
       float R = (redAC / maxRed) / (irAC / maxIR);
       float spo2 = 104 - 17 * R;
       if (spo2 > 100)
@@ -433,7 +477,8 @@ void processSignal(long irValue, long redValue) {
 // exactly the calmest, healthiest readings. This converts RMSSD into a
 // bounded 0-100 normalized stress score used by both the dashboard and OLED.
 // Higher score = more stress.
-float stressScoreFromRMSSD(float rmssdVal) {
+float stressScoreFromRMSSD(float rmssdVal)
+{
   if (rmssdVal <= 0)
     return 0;
 
@@ -453,7 +498,8 @@ float stressScoreFromRMSSD(float rmssdVal) {
 
   float score = 100.0f -
                 ((rmssdVal - RMSSD_HIGH_STRESS) /
-                 (RMSSD_LOW_STRESS - RMSSD_HIGH_STRESS)) * 100.0f;
+                 (RMSSD_LOW_STRESS - RMSSD_HIGH_STRESS)) *
+                    100.0f;
 
   if (score < 0)
     score = 0;
@@ -463,10 +509,13 @@ float stressScoreFromRMSSD(float rmssdVal) {
   return score;
 }
 
-void queueRealTimeData(int bpm, int spo2_val, float stress_val) {
-  if (uploadMutex == nullptr) return;
+void queueRealTimeData(int bpm, int spo2_val, float stress_val)
+{
+  if (uploadMutex == nullptr)
+    return;
 
-  if (xSemaphoreTake(uploadMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
+  if (xSemaphoreTake(uploadMutex, pdMS_TO_TICKS(5)) == pdTRUE)
+  {
     pendingBpm = bpm;
     pendingSpo2 = spo2_val;
     pendingStress = stress_val;
@@ -475,13 +524,16 @@ void queueRealTimeData(int bpm, int spo2_val, float stress_val) {
   }
 }
 
-void realTimeUploadTask(void *parameter) {
+void realTimeUploadTask(void *parameter)
+{
   (void)parameter;
 
-  for (;;) {
+  for (;;)
+  {
     vTaskDelay(pdMS_TO_TICKS(1000));
 
-    if (uploadMutex == nullptr) continue;
+    if (uploadMutex == nullptr)
+      continue;
 
     int bpm = 0;
     int spo2_val = 0;
@@ -489,8 +541,10 @@ void realTimeUploadTask(void *parameter) {
     int sessionIdSnapshot = 0;
     bool shouldUpload = false;
 
-    if (xSemaphoreTake(uploadMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
-      if (uploadPending) {
+    if (xSemaphoreTake(uploadMutex, pdMS_TO_TICKS(20)) == pdTRUE)
+    {
+      if (uploadPending)
+      {
         bpm = pendingBpm;
         spo2_val = pendingSpo2;
         stress_val = pendingStress;
@@ -501,21 +555,26 @@ void realTimeUploadTask(void *parameter) {
       xSemaphoreGive(uploadMutex);
     }
 
-    if (!shouldUpload) continue;
+    if (!shouldUpload)
+      continue;
 
-    if (WiFi.status() != WL_CONNECTED) {
+    if (WiFi.status() != WL_CONNECTED)
+    {
       connectToWiFi();
-      if (WiFi.status() != WL_CONNECTED) continue;
+      if (WiFi.status() != WL_CONNECTED)
+        continue;
     }
 
     // Do not send an empty measurement before RMSSD has become valid.
-    if (bpm == 0 && stress_val == 0) continue;
+    if (bpm == 0 && stress_val == 0)
+      continue;
 
     HTTPClient localHttp;
     localHttp.setConnectTimeout(1000);
     localHttp.setTimeout(1000);
 
-    if (!localHttp.begin(serverUrl)) {
+    if (!localHttp.begin(serverUrl))
+    {
       Serial.println("HTTP begin failed");
       continue;
     }
@@ -523,7 +582,8 @@ void realTimeUploadTask(void *parameter) {
     localHttp.addHeader("Content-Type", "application/json");
 
     DynamicJsonDocument doc(256);
-    if (sessionIdSnapshot > 0) {
+    if (sessionIdSnapshot > 0)
+    {
       doc["session_id"] = sessionIdSnapshot;
     }
     doc["bpm"] = bpm;
@@ -538,24 +598,30 @@ void realTimeUploadTask(void *parameter) {
 
     int httpCode = localHttp.POST(jsonStr);
 
-    if (httpCode == 200 || httpCode == 201) {
+    if (httpCode == 200 || httpCode == 201)
+    {
       String response = localHttp.getString();
 
       DynamicJsonDocument responseDoc(256);
       DeserializationError err = deserializeJson(responseDoc, response);
 
-      if (!err && responseDoc.containsKey("session_id")) {
+      if (!err && responseDoc.containsKey("session_id"))
+      {
         int returnedSessionId = responseDoc["session_id"];
 
-        if (xSemaphoreTake(uploadMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
-          if (currentSessionId == 0) {
+        if (xSemaphoreTake(uploadMutex, pdMS_TO_TICKS(20)) == pdTRUE)
+        {
+          if (currentSessionId == 0)
+          {
             currentSessionId = returnedSessionId;
             Serial.printf("Session ID: %d\n", currentSessionId);
           }
           xSemaphoreGive(uploadMutex);
         }
       }
-    } else {
+    }
+    else
+    {
       Serial.printf("RT HTTP Error: %d\n", httpCode);
     }
 
@@ -563,7 +629,8 @@ void realTimeUploadTask(void *parameter) {
   }
 }
 
-void endSessionAndUpload() {
+void endSessionAndUpload()
+{
   // Stop creating new live readings immediately.
   sessionActive = false;
   inGracePeriod = false;
@@ -580,26 +647,31 @@ void endSessionAndUpload() {
   // is removed. In that case currentSessionId is still 0 for a short time.
   // Wait for that POST to finish before trying to end the session.
   unsigned long waitStart = millis();
-  while (millis() - waitStart < 3500) {
+  while (millis() - waitStart < 3500)
+  {
     if (uploadMutex != nullptr &&
-        xSemaphoreTake(uploadMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+        xSemaphoreTake(uploadMutex, pdMS_TO_TICKS(20)) == pdTRUE)
+    {
       sessionIdToEnd = currentSessionId;
       uploadPending = false;
       xSemaphoreGive(uploadMutex);
     }
 
-    if (sessionIdToEnd > 0) break;
+    if (sessionIdToEnd > 0)
+      break;
     delay(50);
   }
 
   Serial.printf("AUTO END: session ID = %d\n", sessionIdToEnd);
 
-  if (WiFi.status() == WL_CONNECTED && sessionIdToEnd > 0) {
+  if (WiFi.status() == WL_CONNECTED && sessionIdToEnd > 0)
+  {
     HTTPClient localHttp;
     localHttp.setConnectTimeout(1000);
     localHttp.setTimeout(1000);
 
-    if (localHttp.begin(endSessionUrl)) {
+    if (localHttp.begin(endSessionUrl))
+    {
       localHttp.addHeader("Content-Type", "application/json");
 
       DynamicJsonDocument doc(128);
@@ -621,26 +693,33 @@ void endSessionAndUpload() {
   }
 
   if (uploadMutex != nullptr &&
-      xSemaphoreTake(uploadMutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+      xSemaphoreTake(uploadMutex, pdMS_TO_TICKS(20)) == pdTRUE)
+  {
     currentSessionId = 0;
     xSemaphoreGive(uploadMutex);
-  } else {
+  }
+  else
+  {
     currentSessionId = 0;
   }
 
   delay(2000);
 }
 
-void updateDisplay() {
+void updateDisplay()
+{
   display.clearDisplay();
 
   // 1. Timer
   display.setTextSize(1);
   display.setCursor(0, 0);
-  if (inGracePeriod) {
+  if (inGracePeriod)
+  {
     display.print("Resume? ");
     display.print((GRACE_PERIOD_MS - (millis() - graceTimerStart)) / 100);
-  } else {
+  }
+  else
+  {
     unsigned long elapsed = (millis() - sessionStartTime) / 1000;
     display.print("Time: ");
     display.print(elapsed);
@@ -649,12 +728,15 @@ void updateDisplay() {
 
   // 2. Heart Icon (Blinks for 100ms after a beat)
   bool beatFlash = (millis() - lastBeatDetectedTime < 150);
-  if (beatFlash) {
+  if (beatFlash)
+  {
     // Filled Heart
     display.fillCircle(118, 5, 4, WHITE);
     display.fillCircle(124, 5, 4, WHITE);
     display.fillTriangle(114, 5, 128, 5, 121, 14, WHITE);
-  } else {
+  }
+  else
+  {
     // Empty Heart (Outline)
     display.drawCircle(118, 5, 4, WHITE);
     display.drawCircle(124, 5, 4, WHITE);
@@ -681,7 +763,8 @@ void updateDisplay() {
   // 5. Stress Category (unchanged - still your original raw-RMSSD thresholds)
   display.setCursor(70, 54);
   String stressStr = "WAIT";
-  if (rmssd > 0) {
+  if (rmssd > 0)
+  {
     float displayStressScore = stressScoreFromRMSSD(rmssd);
     if (displayStressScore >= STRESS_HIGH_SCORE_THRESH)
       stressStr = "HIGH";
@@ -696,7 +779,8 @@ void updateDisplay() {
   display.display();
 }
 
-void showStatus(const char *msg) {
+void showStatus(const char *msg)
+{
   display.clearDisplay();
   display.setCursor(0, 0);
   display.setTextSize(1);
@@ -704,7 +788,8 @@ void showStatus(const char *msg) {
   display.display();
 }
 
-void showIdleScreen() {
+void showIdleScreen()
+{
   display.clearDisplay();
   display.setTextSize(2);
   display.setCursor(30, 10);
